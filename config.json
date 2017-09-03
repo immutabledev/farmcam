@@ -1,0 +1,13 @@
+{
+	"cam_ip":"",
+	"cam_port":"",
+	"cam_user":"",
+	"cam_pass":"",
+	"cam_control_user":"",
+	"cam_control_pass":"",
+	"domain":"",
+	"restart_cmd":"",
+	"forcastio_key":"",
+	"weather_lat":"",
+	"weather_lon":""
+}
