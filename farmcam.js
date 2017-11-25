@@ -134,7 +134,7 @@ var camera = new Foscam({
   username: conf.cam_control_user,
   password: conf.cam_control_pass,
   host: IP,
-  port: 88, // default
+  port: PORT, // default
   protocol: 'http', // default
   rejectUnauthorizedCerts: true // default
 });
