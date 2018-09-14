@@ -1,13 +1,13 @@
 {
   "name": "farmcam",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Backend for an HTML5 RTSP camera relay and basic controls..",
   "main": "farmcam.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
-    "foscam",
+    "amcrest",
     "html5",
     "cam",
     "camera"
@@ -15,12 +15,9 @@
   "author": "immutabledev",
   "license": "ISC",
   "dependencies": {
-    "child_process": "^1.0.2",
-    "cors": "^2.8.4",
     "express": "^4.15.4",
-    "foscam-client": "^0.4.0",
-    "node-rtsp-stream": "0.0.3",
-    "node-rtsp-stream-es6": "^1.0.6",
+    "node-dahua-api": "^1.0.2",
+    "socket.io-client": "^2.1.1",
     "ws": "^3.1.0"
   }
 }
