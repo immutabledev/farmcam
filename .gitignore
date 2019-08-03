@@ -57,10 +57,5 @@ typings/
 # dotenv environment variables file
 .env
 
-<<<<<<< HEAD
 config.json
-certs/
-=======
-# config file
-config.json
->>>>>>> 795a56a9b8f530cdaf95bd34d6e978f297b30293
+fingerprints.txt
