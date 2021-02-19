@@ -142,13 +142,20 @@ var streamServer = http.createServer( function(request, response) {
         }
 }).listen(STREAM_PORT);
 
+var moveLeftTimer, moveRightTimer, moveUpTimer, moveDownTimer, zoomInTimer, zoomOutTimer = null;
+
 io.on('connection', function(socket){
   var socketId = socket.id;
   var clientIp = socket.request.connection.remoteAddress;
   var q = socket.handshake.query.name;
+
   console.log('[SocketIO] New Connection: '+clientIp+':'+socketId+' ['+q+']');
   if (!q || q.match(/^[a-z0-9]+$/i) === null) {
      socket.disconnect(true);
+  }
+
+  if (conf.lock_controls == "true") {
+    socket.disconnect(true);
   }
 
   var fingerprints = fs.readFileSync('fingerprints.txt', 'utf8').split('\n');
@@ -166,10 +173,15 @@ io.on('connection', function(socket){
 //        socket.disconnect(true);
 //    }
     moveCam('Left');
+    moveLeftTimer = setTimeout(() => moveCamStop('Left'), 10000);
   });
   socket.on('moveLeftStop', function() {
     if (DEBUG) console.log('Move left stop.');
     moveCamStop('Left');
+    if (moveLeftTimer != null) {
+      clearTimeout(moveLeftTimer);
+      moveLeftTimer = null;
+    }
   });
   socket.on('moveRight', function() {
     if (DEBUG) console.log('Move right.');
