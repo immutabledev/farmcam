@@ -2,16 +2,15 @@
 
 // Read configuration
 var fs = require("fs"),
-    spawn = require('child_process').spawn,
-    Foscam = require('foscam-client'),
-    https = require('https'),
+    readline = require('readline'),
+    cam = require('node-dahua-api'),
     http = require('http'),
+    https = require('https'),
     WebSocket = require('ws'),
     express = require('express'),
-    app = express(),
-    cors = require('cors'),
-    exec = require('child_process').exec,
-    Forecast = require('forecast');
+    app = express();
+
+var DEBUG = 0;
 
 var conf = JSON.parse(fs.readFileSync("config.json"));
 
@@ -20,19 +19,56 @@ var IP = conf.cam_ip;
 var PORT = conf.cam_port;
 var USER = conf.cam_user;
 var PASS = conf.cam_pass;
-var URL = 'rtsp://'+USER+':'+PASS+'@'+IP+':'+PORT+'/videoSub';
+var URL = 'rtsp://'+USER+':'+PASS+'@'+IP+':'+PORT;
 
 var STREAM_SECRET = "farmcam",
-        STREAM_PORT = 8081,
-        WEBSOCKET_PORT = 8082,
+        STREAM_PORT = 8181,
+        WEBSOCKET_PORT = 8182,
+	SOCKETIO_PORT = 8183,
         RECORD_STREAM = false;
 
+var camOptions = {
+	host	: IP,
+	port 	: PORT, 
+	user 	: USER,
+	pass 	: PASS,
+	log 	: false
+};
+var CAMSPEED = '4';
+var CAMDELAYMS = '200';
+console.log('***************************** Farmcam Starting *****************************');
+console.log("[Camera] Connecting to: "+URL);
+var camera = new cam.dahua(camOptions);
+var cameraStatus = {};
 
-console.log("Connecting to Camera: "+URL);
+camera.on('error', function(error){ console.log("[Camera] Error: ("+error+")"); });
+camera.on('ptzStatus', function(status) {
+  var str = status.slice(0, -1);
+  str = str.toString().replace(/,/g, '", "');
+  str = str.replace(/=/g, '": "');
+  var jsonStr = '{"' + str + '"}';
+  var j = JSON.parse(jsonStr);
+  cameraStatus.pan = j['status.Postion[0]'];
+  cameraStatus.tilt = j['status.Postion[1]'];
+  //console.log("[Camera] Status: "+cameraStatus.pan+","+cameraStatus.tilt); 
+});
 
-const key = fs.readFileSync('certs/key.pem');
+const key = fs.readFileSync('certs/privkey.pem');
 const cert = fs.readFileSync('certs/cert.pem');
 const ca = fs.readFileSync('certs/chain.pem');
+
+// SocketIO Server
+const httpsIO = require('https').createServer({
+        key: key,
+        cert: cert,
+        ca: ca
+    }, app);
+const io = require('socket.io').listen(httpsIO);
+httpsIO.listen(SOCKETIO_PORT, function() {
+  console.log('[SocketIO] Server Running on %s port', SOCKETIO_PORT);
+});
+
+var FINGERPRINT = "";
 
 // Websocket Server
 const httpsServer = https.createServer({
@@ -41,13 +77,12 @@ const httpsServer = https.createServer({
         ca: ca
     }).listen(WEBSOCKET_PORT);
 
-//var socketServer = new WebSocket.Server({server: httpsServer, perMessageDeflate: false});
 var socketServer = new WebSocket.Server( {server: httpsServer} );
 socketServer.connectionCount = 0;
 socketServer.on('connection', function(socket, upgradeReq) {
         socketServer.connectionCount++;
         console.log(
-                'New WebSocket Connection: ',
+                '[WebSocket] New Connection: ',
                 (upgradeReq || socket.upgradeReq).socket.remoteAddress,
                 (upgradeReq || socket.upgradeReq).headers['user-agent'],
                 '('+socketServer.connectionCount+' total)'
@@ -55,9 +90,10 @@ socketServer.on('connection', function(socket, upgradeReq) {
         socket.on('close', function(code, message){
                 socketServer.connectionCount--;
                 console.log(
-                        'Disconnected WebSocket ('+socketServer.connectionCount+' total)'
+                        '[WebSocket] Closed Connection ('+socketServer.connectionCount+' total)'
                 );
         });
+	socket.on('error', (err) => console.log('[WebSocket] Socket Error:', err));
 });
 socketServer.broadcast = function(data) {
         socketServer.clients.forEach(function each(client) {
@@ -66,6 +102,7 @@ socketServer.broadcast = function(data) {
                 }
         });
 };
+socketServer.on('error', (err) => console.log('[WebSocket] Error:', err));
 
 // HTTP Server to accept incomming MPEG-TS Stream from ffmpeg
 var streamServer = http.createServer( function(request, response) {
@@ -73,7 +110,7 @@ var streamServer = http.createServer( function(request, response) {
 
         if (params[0] !== STREAM_SECRET) {
                 console.log(
-                        'Failed Stream Connection: '+ request.socket.remoteAddress + ':' +
+                        '[Stream] Failed Connection: '+ request.socket.remoteAddress + ':' +
                         request.socket.remotePort + ' - wrong secret.'
                 );
                 response.end();
@@ -81,7 +118,7 @@ var streamServer = http.createServer( function(request, response) {
 
         response.connection.setTimeout(0);
         console.log(
-                'Stream Connected: ' +
+                '[Stream] New Connection: ' +
                 request.socket.remoteAddress + ':' +
                 request.socket.remotePort
         );
@@ -105,166 +142,145 @@ var streamServer = http.createServer( function(request, response) {
         }
 }).listen(STREAM_PORT);
 
-// Create the stream from the camera
-/*
-var cmd = '/usr/bin/ffmpeg';
+var moveLeftTimer, moveRightTimer, moveUpTimer, moveDownTimer, zoomInTimer, zoomOutTimer = null;
 
-var args = [
-    '-i', URL,
-    '-err_detect', 'ignore_err',
-    '-f', 'mpegts',
-    '-codec:v', 'mpeg1video',
-    '-bf', '0',
-    '-b:v', '180k',
-    '-r', '24',
-    '-codec:a', 'mp2',
-    '-ar', '44100',
-    'http://127.0.0.1:8081/farmcam'
-];
+io.on('connection', function(socket){
+  var socketId = socket.id;
+  var clientIp = socket.request.connection.remoteAddress;
+  var q = socket.handshake.query.name;
 
-var proc = spawn(cmd, args);
-
-proc.stderr.on('data', function(data) {
-    console.log("[ffmpeg] "+data);
-});
-*/
-
-// Setup camera control
-var camera = new Foscam({
-  username: conf.cam_control_user,
-  password: conf.cam_control_pass,
-  host: IP,
-  port: PORT, // default
-  protocol: 'http', // default
-  rejectUnauthorizedCerts: true // default
-});
-
-https.createServer({
-      key: key,
-      cert: cert,
-      ca: ca 
-    }, app).listen(6999);
-
-var whitelist = ['http://'+conf.domain, 'http://www.'+conf.domain, 'https://'+conf.domain, 'https://www.'+conf.domain];
-var corsOptions = {
-  origin: function(origin, callback){
-    var originIsWhitelisted = whitelist.indexOf(origin) !== -1;
-    callback(null, originIsWhitelisted);
+  console.log('[SocketIO] New Connection: '+clientIp+':'+socketId+' ['+q+']');
+  if (!q || q.match(/^[a-z0-9]+$/i) === null) {
+     socket.disconnect(true);
   }
-};
 
-var forceRestartCmd = conf.restart_cmd;
-var lastRestarted = Date.now();
+  if (conf.lock_controls == "true") {
+    socket.disconnect(true);
+  }
 
-// Define POST URLs
-app.post('/move/left', cors(corsOptions), function(req, res) {
-	camera.ptzMoveLeft().then(function() {
-		setTimeout(function() {
-                                camera.ptzStopRun()
-                                    .then(function(result) {
-                                        //resolve(result);
-					res.send(req.body);
-                                    })
-                                    .catch(function(result) {
-                                        //reject(result);
-                                    });
-                            }, 200);
-	});
-});
-
-app.post('/move/right', cors(corsOptions), function(req, res) {
-        camera.ptzMoveRight().then(function() {
-                setTimeout(function() {
-                                camera.ptzStopRun()
-                                    .then(function(result) {
-                                        //resolve(result);
-					res.send(req.body);
-                                    })
-                                    .catch(function(result) {
-                                        //reject(result);
-                                    });
-                            }, 200);
-        });
-});
-
-app.post('/move/up', cors(corsOptions), function(req, res) {
-        camera.ptzMoveUp().then(function() {
-                setTimeout(function() {
-                                camera.ptzStopRun()
-                                    .then(function(result) {
-                                        //resolve(result);
-                                        res.send(req.body);
-                                    })
-                                    .catch(function(result) {
-
-                                        //reject(result);
-                                    });
-                            }, 200);
-        });
-});
-
-app.post('/move/down', cors(corsOptions), function(req, res) {
-        camera.ptzMoveDown().then(function() {
-                setTimeout(function() {
-                                camera.ptzStopRun()
-                                    .then(function(result) {
-                                        //resolve(result);
-                                        res.send(req.body);
-                                    })
-                                    .catch(function(result) {
-
-                                        //reject(result);
-                                    });
-                            }, 200);
-        });
-});
-
-app.post('/preset/pond', cors(corsOptions), function(req, res) {
-	camera.ptzGotoPresetPoint('Pond');
-	res.send(req.body);
-});
-
-app.post('/preset/goatdeck', cors(corsOptions), function(req, res) {
-        camera.ptzGotoPresetPoint('GoatDeck');
-	res.send(req.body);
-});
-
-app.post('/preset/bluecottage', cors(corsOptions), function(req, res) {
-        camera.ptzGotoPresetPoint('BlueCottage');
-        res.send(req.body);
-
-});
-
-app.post('/restart_cam', cors(corsOptions), function(req, res) {
-	var rn = Date.now();
-	console.log("Restart Requested: ["+rn+"]["+lastRestarted+"]");
-	if ((rn - lastRestarted)  > 5000) {
-		lastRestarted = rn; 
-		exec(forceRestartCmd, function(error, stdout, stderr) {
-			console.log("Restart commanded!");
-			res.send(req.body);
-		});
-	} else {
-		res.send(req.body);
-	}
-});
-
-// Configure weather
-var forecast = new Forecast({
-  service: 'forecast.io',
-  key: conf.forecastio_key,
-  units: 'f', // Only the first letter is parsed 
-  cache: true,      // Cache API requests? 
-  ttl: {            // How long to cache requests. Uses syntax from moment.js: http://momentjs.com/docs/#/durations/creating/ 
-    minutes: 5,
-    seconds: 0 
+  var fingerprints = fs.readFileSync('fingerprints.txt', 'utf8').split('\n');
+  fingerprints.forEach(function (fingerprint, index) {
+    if (q == fingerprint) {
+      socket.disconnect(true);
+      console.log("[SocketIO] Disconnected banned fingerprint ["+fingerprint+"]");
     }
+  }); 
+
+  socket.on('moveLeft', function() {
+    if (DEBUG) console.log('Move left.');
+//    if (!FINGERPRINT) {
+//        moveCamStop('Left');
+//        socket.disconnect(true);
+//    }
+    moveCam('Left');
+    moveLeftTimer = setTimeout(() => moveCamStop('Left'), 10000);
+  });
+  socket.on('moveLeftStop', function() {
+    if (DEBUG) console.log('Move left stop.');
+    moveCamStop('Left');
+    if (moveLeftTimer != null) {
+      clearTimeout(moveLeftTimer);
+      moveLeftTimer = null;
+    }
+  });
+  socket.on('moveRight', function() {
+    if (DEBUG) console.log('Move right.');
+//    if (!FINGERPRINT) return;
+    moveCam('Right');
+  });
+  socket.on('moveRightStop', function() {
+    if (DEBUG) console.log('Move right stop.');
+    moveCamStop('Right');
+  });
+  socket.on('moveUp', function() {
+    if (DEBUG) console.log('Move up.');
+//    if (!FINGERPRINT) return;
+    moveCam('Up');
+  });
+  socket.on('moveUpStop', function() {
+    if (DEBUG) console.log('Move up stop.');
+    moveCamStop('Up');
+  });
+  socket.on('moveDown', function() {
+    if (DEBUG) console.log('Move down.');
+//    if (!FINGERPRINT) return;
+    moveCam('Down');
+  });
+  socket.on('moveDownStop', function() {
+    if (DEBUG) console.log('Move down stop.');
+    moveCamStop('Down');
+  });
+  socket.on('zoomIn', function() {
+    if (DEBUG) console.log('Zoom in.');
+//   if (!FINGERPRINT) return;
+    zoomIn();
+  });
+  socket.on('zoomInStop', function() {
+    if (DEBUG) console.log('Zoom in stop.');
+    zoomInStop();
+  });
+  socket.on('zoomOut', function() {
+    if (DEBUG) console.log('Zoom out.');
+//    if (!FINGERPRINT) return;
+    zoomOut();
+  });
+  socket.on('zoomOutStop', function() {
+    if (DEBUG) console.log('Zoom out stop.');
+    zoomOutStop();
+  });
+  socket.on('gotoPreset', function(preset) {
+    if (DEBUG) console.log('Goto Preset: '+preset);
+//    if (!FINGERPRINT) return;
+    gotoPreset(preset);
+  });
+  socket.on('getPTZ', function(callback) {
+    if (DEBUG) console.log('Get PTZ.');
+//    if (!FINGERPRINT) return;
+    callback(cameraStatus.pan);
+  });
+  socket.on('getConnections', function(callback) {
+    if (DEBUG) console.log('Get connections.');
+//   if (!FINGERPRINT) return;
+    callback(socketServer.connectionCount);
+  });
+  socket.on('fingerprint', function(f) {
+    console.log('FINGERPRINT: ['+f+'}');
+    FINGERPRINT = f;
+  });
 });
 
-// Make weather data available via GET
-app.get('/forecast', cors(corsOptions), function(req, res) {
-	forecast.get([conf.weather_lat,conf.weather_lon], function(err, weather) {
-		if(err) return res.send(err);
-		res.json(weather);
-	});
-});
+function moveCam(dir) {
+	camera.ptzMove(dir, "start", CAMSPEED);
+}
+
+function moveCamStop(dir) {
+	camera.ptzMove(dir, "stop", CAMSPEED);
+}
+
+function zoomIn() {
+	camera.ptzZoom(1.0);
+}
+ 
+function zoomInStop() {
+        camera.ptzZoomStop(1.0);
+}
+
+function zoomOut() {
+	camera.ptzZoom(-1.0);
+}
+
+function zoomOutStop() {
+        camera.ptzZoomStop(-1.0);
+}
+
+function gotoPreset(preset) {
+	camera.ptzPreset(preset);
+}
+
+function getStatus() {
+	camera.ptzStatus();
+}
+
+setInterval(function() { 
+	getStatus();
+}, 1000);
